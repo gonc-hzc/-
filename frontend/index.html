@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>捡球机器人软件遥控器</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-height: 100vh;
+      font-family: "Segoe UI", Arial, sans-serif;
+      background: #181713;
+      color: #f7f3ea;
+      text-align: center;
+      margin: 0;
+      padding: 28px 18px;
+      overscroll-behavior: none;
+      user-select: none;
+    }
+
+    h1 {
+      font-size: clamp(26px, 4vw, 42px);
+      margin-bottom: 10px;
+      letter-spacing: 0;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 170px;
+      margin: 8px 0 6px;
+      padding: 8px 14px;
+      border: 1px solid #4a463d;
+      border-radius: 999px;
+      background: #24221d;
+      color: #fbbf24;
+      font-size: 16px;
+    }
+
+    .status[data-state="connected"] {
+      color: #86efac;
+      border-color: #34734c;
+    }
+
+    .status[data-state="error"] {
+      color: #fca5a5;
+      border-color: #7f1d1d;
+    }
+
+    .panel {
+      display: flex;
+      justify-content: center;
+      gap: clamp(24px, 8vw, 80px);
+      margin-top: 32px;
+      flex-wrap: wrap;
+    }
+
+    .joystick-box {
+      width: min(42vw, 240px);
+      min-width: 190px;
+      aspect-ratio: 1;
+      background:
+        radial-gradient(circle at center, transparent 0 28%, #343026 29% 30%, transparent 31%),
+        linear-gradient(135deg, #24221d, #202922);
+      border-radius: 18px;
+      position: relative;
+      border: 2px solid #4a463d;
+      touch-action: none;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+    }
+
+    .stick {
+      width: 32%;
+      height: 32%;
+      background: #3b82f6;
+      border-radius: 50%;
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+      will-change: left, top;
+    }
+
+    .joystick-box:active .stick {
+      background: #60a5fa;
+    }
+
+    .label {
+      margin-top: 15px;
+      font-size: 18px;
+    }
+
+    .data {
+      margin-top: 30px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(140px, 1fr));
+      gap: 10px 22px;
+      width: min(460px, 100%);
+      margin-inline: auto;
+      font-size: 18px;
+      line-height: 1.5;
+      text-align: left;
+    }
+
+    .data div {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 9px 12px;
+      border: 1px solid #39362f;
+      border-radius: 8px;
+      background: #211f1a;
+    }
+
+    .data span {
+      font-variant-numeric: tabular-nums;
+      color: #bfdbfe;
+    }
+
+    button {
+      margin-top: 30px;
+      padding: 14px 35px;
+      font-size: 20px;
+      border: none;
+      border-radius: 10px;
+      background: #ef4444;
+      color: white;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #dc2626;
+    }
+
+    button:active {
+      transform: translateY(1px);
+    }
+
+    @media (max-width: 520px) {
+      body {
+        padding: 20px 12px;
+      }
+
+      .panel {
+        gap: 24px;
+      }
+
+      .joystick-box {
+        width: min(78vw, 260px);
+      }
+
+      .data {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <h1>捡球机器人软件遥控器</h1>
+
+  <div class="status" id="status" data-state="idle">未连接</div>
+
+  <div class="panel">
+    <div>
+      <div class="joystick-box" id="leftJoy">
+        <div class="stick" id="leftStick"></div>
+      </div>
+      <div class="label">左摇杆：前进 / 后退</div>
+    </div>
+
+    <div>
+      <div class="joystick-box" id="rightJoy">
+        <div class="stick" id="rightStick"></div>
+      </div>
+      <div class="label">右摇杆：左转 / 右转</div>
+    </div>
+  </div>
+
+  <div class="data">
+    <div>throttle <span id="throttleText">0</span></div>
+    <div>turn <span id="turnText">0</span></div>
+    <div>left mix <span id="leftText">0</span></div>
+    <div>right mix <span id="rightText">0</span></div>
+  </div>
+
+  <button onclick="emergencyStop()">紧急停止</button>
+
+  <script>
+    const WS_URL = "ws://127.0.0.1:8765";
+
+    let ws = null;
+    let seq = 0;
+    let throttle = 0;
+    let turn = 0;
+    let reconnectTimer = null;
+    let reconnectDelay = 500;
+    let lastSendAt = 0;
+    const resetJoystickFns = [];
+
+    const MAX_VALUE = 1000;
+    const DEADZONE = 0.08;
+    const SEND_PERIOD = 50;
+    const KEY_STEP = 120;
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function applyDeadzone(value) {
+      if (Math.abs(value) < DEADZONE) {
+        return 0;
+      }
+
+      if (value > 0) {
+        return (value - DEADZONE) / (1 - DEADZONE);
+      }
+
+      return (value + DEADZONE) / (1 - DEADZONE);
+    }
+
+    function setStatus(text, state) {
+      const status = document.getElementById("status");
+      status.innerText = text;
+      status.dataset.state = state;
+    }
+
+    function connectWebSocket() {
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        return;
+      }
+
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        reconnectDelay = 500;
+        setStatus("已连接 WebSocket", "connected");
+        sendRemotePacket(true);
+      };
+
+      ws.onclose = () => {
+        setStatus("连接断开，重连中", "idle");
+        scheduleReconnect();
+      };
+
+      ws.onerror = () => {
+        setStatus("连接错误，重连中", "error");
+      };
+    }
+
+    function scheduleReconnect() {
+      if (reconnectTimer) {
+        return;
+      }
+
+      reconnectTimer = window.setTimeout(() => {
+        reconnectTimer = null;
+        connectWebSocket();
+        reconnectDelay = Math.min(reconnectDelay * 1.5, 3000);
+      }, reconnectDelay);
+    }
+
+    function setupJoystick(boxId, stickId, mode) {
+      const box = document.getElementById(boxId);
+      const stick = document.getElementById(stickId);
+      let activePointerId = null;
+
+      function moveStick(clientX, clientY) {
+        const rect = box.getBoundingClientRect();
+        const stickRadius = stick.offsetWidth / 2;
+        const centerX = rect.left + rect.width / 2;
+        const centerY = rect.top + rect.height / 2;
+
+        let dx = clientX - centerX;
+        let dy = clientY - centerY;
+        const maxRadius = rect.width / 2 - stickRadius;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance > maxRadius) {
+          dx = dx / distance * maxRadius;
+          dy = dy / distance * maxRadius;
+        }
+
+        stick.style.left = `${50 + dx / rect.width * 100}%`;
+        stick.style.top = `${50 + dy / rect.height * 100}%`;
+
+        const normX = dx / maxRadius;
+        const normY = dy / maxRadius;
+
+        if (mode === "left") {
+          throttle = Math.round(-applyDeadzone(normY) * MAX_VALUE);
+        }
+
+        if (mode === "right") {
+          turn = Math.round(applyDeadzone(normX) * MAX_VALUE);
+        }
+
+        updateTelemetry();
+        sendRemotePacket();
+      }
+
+      function resetStick() {
+        stick.style.left = "50%";
+        stick.style.top = "50%";
+
+        if (mode === "left") {
+          throttle = 0;
+        }
+
+        if (mode === "right") {
+          turn = 0;
+        }
+
+        updateTelemetry();
+        sendRemotePacket(true);
+      }
+
+      box.addEventListener("pointerdown", (e) => {
+        activePointerId = e.pointerId;
+        box.setPointerCapture(e.pointerId);
+        moveStick(e.clientX, e.clientY);
+      });
+
+      box.addEventListener("pointermove", (e) => {
+        if (activePointerId === e.pointerId) {
+          moveStick(e.clientX, e.clientY);
+        }
+      });
+
+      function releasePointer(e) {
+        if (activePointerId === e.pointerId) {
+          activePointerId = null;
+          if (box.hasPointerCapture(e.pointerId)) {
+            box.releasePointerCapture(e.pointerId);
+          }
+          resetStick();
+        }
+      }
+
+      box.addEventListener("pointerup", releasePointer);
+      box.addEventListener("pointercancel", releasePointer);
+      box.addEventListener("lostpointercapture", () => {
+        if (activePointerId !== null) {
+          activePointerId = null;
+          resetStick();
+        }
+      });
+
+      resetJoystickFns.push(resetStick);
+    }
+
+    function updateTelemetry() {
+      const left = clamp(throttle + turn, -MAX_VALUE, MAX_VALUE);
+      const right = clamp(throttle - turn, -MAX_VALUE, MAX_VALUE);
+
+      document.getElementById("throttleText").innerText = throttle;
+      document.getElementById("turnText").innerText = turn;
+      document.getElementById("leftText").innerText = left;
+      document.getElementById("rightText").innerText = right;
+    }
+
+    function sendRemotePacket(force = false) {
+      updateTelemetry();
+
+      const now = performance.now();
+      if (!force && now - lastSendAt < SEND_PERIOD) {
+        return;
+      }
+
+      const packet = {
+        type: "rc",
+        seq: seq,
+        throttle: throttle,
+        turn: turn,
+        ts: Date.now() / 1000
+      };
+
+      seq = (seq + 1) % 65536;
+      lastSendAt = now;
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(packet));
+      }
+    }
+
+    function emergencyStop() {
+      throttle = 0;
+      turn = 0;
+      resetJoystickFns.forEach((reset) => reset());
+      sendRemotePacket(true);
+      window.setTimeout(() => sendRemotePacket(true), 20);
+      window.setTimeout(() => sendRemotePacket(true), 40);
+    }
+
+    function setupKeyboard() {
+      const activeKeys = new Set();
+      const controlKeys = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "Space"]);
+
+      window.addEventListener("keydown", (e) => {
+        if (!controlKeys.has(e.code)) {
+          return;
+        }
+
+        e.preventDefault();
+        activeKeys.add(e.code);
+
+        if (e.code === "Space") {
+          emergencyStop();
+        }
+      });
+
+      window.addEventListener("keyup", (e) => {
+        activeKeys.delete(e.code);
+      });
+
+      window.setInterval(() => {
+        if (activeKeys.has("KeyW")) {
+          throttle = clamp(throttle + KEY_STEP, -MAX_VALUE, MAX_VALUE);
+        }
+        if (activeKeys.has("KeyS")) {
+          throttle = clamp(throttle - KEY_STEP, -MAX_VALUE, MAX_VALUE);
+        }
+        if (activeKeys.has("KeyA")) {
+          turn = clamp(turn - KEY_STEP, -MAX_VALUE, MAX_VALUE);
+        }
+        if (activeKeys.has("KeyD")) {
+          turn = clamp(turn + KEY_STEP, -MAX_VALUE, MAX_VALUE);
+        }
+
+        if (activeKeys.size > 0) {
+          updateTelemetry();
+          sendRemotePacket(true);
+        }
+      }, SEND_PERIOD);
+    }
+
+    connectWebSocket();
+    setupJoystick("leftJoy", "leftStick", "left");
+    setupJoystick("rightJoy", "rightStick", "right");
+    setupKeyboard();
+    updateTelemetry();
+    setInterval(() => sendRemotePacket(true), SEND_PERIOD);
+    window.addEventListener("blur", emergencyStop);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        emergencyStop();
+      }
+    });
+  </script>
+</body>
+</html>
