@@ -10,8 +10,11 @@ class RemoteProtocol:
     """Build newline-delimited JSON frames understood by the STM32 firmware.
 
     STM32 accepts integer throttle/turn values in -1000..1000:
-    - throttle: left joystick Y, positive forward, negative backward
-    - turn: right joystick X, positive right turn, negative left turn
+    The chassis firmware negates both command channels before wheel mixing, so
+    command signs are:
+    - throttle: negative forward, positive backward
+    - turn: positive left turn, negative right turn
+    - BLE short JSON uses STM32's v/w parser: {"v": throttle, "w": turn}
     """
 
     INPUT_MIN = -1000
@@ -70,3 +73,13 @@ class RemoteProtocol:
 
     def build_stop_packet(self):
         return self.build_rc_packet(0, 0)
+
+    def build_min_json_packet(self, throttle, turn):
+        throttle = self.clamp(throttle)
+        turn = self.clamp(turn)
+        return json.dumps({"v": throttle, "w": turn}, separators=(",", ":")) + "\n"
+
+    def build_compact_packet(self, throttle, turn):
+        throttle = self.clamp(throttle)
+        turn = self.clamp(turn)
+        return f"T{throttle},R{turn}\n"

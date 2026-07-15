@@ -107,13 +107,13 @@ def main():
                 key = msvcrt.getch().decode("utf-8", errors="ignore").lower()
 
                 if key == "w":
-                    throttle = clamp(throttle + THROTTLE_STEP)
-                elif key == "s":
                     throttle = clamp(throttle - THROTTLE_STEP)
+                elif key == "s":
+                    throttle = clamp(throttle + THROTTLE_STEP)
                 elif key == "a":
-                    turn = clamp(turn - TURN_STEP)
-                elif key == "d":
                     turn = clamp(turn + TURN_STEP)
+                elif key == "d":
+                    turn = clamp(turn - TURN_STEP)
                 elif key == " ":
                     throttle = 0
                     turn = 0

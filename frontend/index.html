@@ -51,6 +51,64 @@
       border-color: #7f1d1d;
     }
 
+    .top-controls {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+
+    .switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border: 1px solid #4a463d;
+      border-radius: 999px;
+      background: #24221d;
+      cursor: pointer;
+    }
+
+    .switch input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .switch-track {
+      width: 46px;
+      height: 26px;
+      padding: 3px;
+      border-radius: 999px;
+      background: #4a463d;
+      transition: background 0.15s ease;
+    }
+
+    .switch-thumb {
+      display: block;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #f7f3ea;
+      transition: transform 0.15s ease;
+    }
+
+    .switch input:checked + .switch-track {
+      background: #2563eb;
+    }
+
+    .switch input:checked + .switch-track .switch-thumb {
+      transform: translateX(20px);
+    }
+
+    .switch-text {
+      min-width: 64px;
+      text-align: left;
+      font-size: 16px;
+    }
+
     .panel {
       display: flex;
       justify-content: center;
@@ -165,6 +223,14 @@
   <h1>捡球机器人软件遥控器</h1>
 
   <div class="status" id="status" data-state="idle">未连接</div>
+  <div class="top-controls">
+    <label class="switch" for="bleSwitch">
+      <input id="bleSwitch" type="checkbox">
+      <span class="switch-track"><span class="switch-thumb"></span></span>
+      <span class="switch-text" id="bleText">蓝牙关闭</span>
+    </label>
+    <div class="status" id="bleStatus" data-state="idle">BLE 未启用</div>
+  </div>
 
   <div class="panel">
     <div>
@@ -201,11 +267,17 @@
     let reconnectTimer = null;
     let reconnectDelay = 500;
     let lastSendAt = 0;
+    let lastSentThrottle = null;
+    let lastSentTurn = null;
+    let bleEnabled = false;
     const resetJoystickFns = [];
 
     const MAX_VALUE = 1000;
-    const DEADZONE = 0.08;
-    const SEND_PERIOD = 50;
+    const DEADZONE = 0.05;
+    const SEND_PERIOD = 60;
+    const HEARTBEAT_PERIOD = 180;
+    const CHANGE_EPSILON = 4;
+    const TURN_GAIN = 1.35;
     const KEY_STEP = 120;
 
     function clamp(value, min, max) {
@@ -224,10 +296,24 @@
       return (value + DEADZONE) / (1 - DEADZONE);
     }
 
+    function shapeTurn(value) {
+      return clamp(value * TURN_GAIN, -1, 1);
+    }
+
     function setStatus(text, state) {
       const status = document.getElementById("status");
       status.innerText = text;
       status.dataset.state = state;
+    }
+
+    function setBleStatus(text, state) {
+      const status = document.getElementById("bleStatus");
+      status.innerText = text;
+      status.dataset.state = state;
+    }
+
+    function updateBleSwitchText() {
+      document.getElementById("bleText").innerText = bleEnabled ? "蓝牙开启" : "蓝牙关闭";
     }
 
     function connectWebSocket() {
@@ -240,16 +326,37 @@
       ws.onopen = () => {
         reconnectDelay = 500;
         setStatus("已连接 WebSocket", "connected");
+        sendBleControl();
         sendRemotePacket(true);
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
+        if (event.code === 4000) {
+          setStatus("已被新页面接管", "idle");
+          if (bleEnabled) {
+            setBleStatus("BLE 由新页面控制", "idle");
+          }
+          return;
+        }
+
         setStatus("连接断开，重连中", "idle");
+        if (bleEnabled) {
+          setBleStatus("BLE 等待桥接", "idle");
+        }
         scheduleReconnect();
       };
 
       ws.onerror = () => {
         setStatus("连接错误，重连中", "error");
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          handleBridgeMessage(data);
+        } catch {
+          return;
+        }
       };
     }
 
@@ -263,6 +370,58 @@
         connectWebSocket();
         reconnectDelay = Math.min(reconnectDelay * 1.5, 3000);
       }, reconnectDelay);
+    }
+
+    function handleBridgeMessage(data) {
+      if (data.type !== "ble_status") {
+        return;
+      }
+
+      if (!data.enabled) {
+        setBleStatus("BLE 未启用", "idle");
+        return;
+      }
+
+      if (data.connected) {
+        setBleStatus("BLE 已连接", "connected");
+      } else if (data.error) {
+        setBleStatus("BLE 重连中", "error");
+      } else {
+        setBleStatus("BLE 连接中", "idle");
+      }
+    }
+
+    function sendBleControl() {
+      updateBleSwitchText();
+
+      if (!bleEnabled) {
+        setBleStatus("BLE 未启用", "idle");
+      } else if (!ws || ws.readyState !== WebSocket.OPEN) {
+        setBleStatus("BLE 等待桥接", "idle");
+      } else {
+        setBleStatus("BLE 连接中", "idle");
+      }
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "ble_control",
+          enabled: bleEnabled,
+          ts: Date.now() / 1000
+        }));
+      }
+    }
+
+    function setupBleSwitch() {
+      const input = document.getElementById("bleSwitch");
+      input.checked = bleEnabled;
+      updateBleSwitchText();
+      input.addEventListener("change", () => {
+        bleEnabled = input.checked;
+        if (!bleEnabled) {
+          emergencyStop();
+        }
+        sendBleControl();
+      });
     }
 
     function setupJoystick(boxId, stickId, mode) {
@@ -297,7 +456,7 @@
         }
 
         if (mode === "right") {
-          turn = Math.round(applyDeadzone(normX) * MAX_VALUE);
+          turn = Math.round(shapeTurn(applyDeadzone(normX)) * MAX_VALUE);
         }
 
         updateTelemetry();
@@ -368,7 +527,13 @@
       updateTelemetry();
 
       const now = performance.now();
-      if (!force && now - lastSendAt < SEND_PERIOD) {
+      const changed =
+        lastSentThrottle === null ||
+        Math.abs(throttle - lastSentThrottle) >= CHANGE_EPSILON ||
+        Math.abs(turn - lastSentTurn) >= CHANGE_EPSILON;
+      const period = changed ? SEND_PERIOD : HEARTBEAT_PERIOD;
+
+      if (!force && now - lastSendAt < period) {
         return;
       }
 
@@ -382,6 +547,8 @@
 
       seq = (seq + 1) % 65536;
       lastSendAt = now;
+      lastSentThrottle = throttle;
+      lastSentTurn = turn;
 
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(packet));
@@ -393,8 +560,8 @@
       turn = 0;
       resetJoystickFns.forEach((reset) => reset());
       sendRemotePacket(true);
-      window.setTimeout(() => sendRemotePacket(true), 20);
-      window.setTimeout(() => sendRemotePacket(true), 40);
+      window.setTimeout(() => sendRemotePacket(true), 50);
+      window.setTimeout(() => sendRemotePacket(true), 100);
     }
 
     function setupKeyboard() {
@@ -440,11 +607,12 @@
     }
 
     connectWebSocket();
+    setupBleSwitch();
     setupJoystick("leftJoy", "leftStick", "left");
     setupJoystick("rightJoy", "rightStick", "right");
     setupKeyboard();
     updateTelemetry();
-    setInterval(() => sendRemotePacket(true), SEND_PERIOD);
+    setInterval(() => sendRemotePacket(false), SEND_PERIOD);
     window.addEventListener("blur", emergencyStop);
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {

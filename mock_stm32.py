@@ -21,8 +21,9 @@ def handle_packet(data):
         throttle = clamp(data.get("vx", 0) * 10)
         turn = clamp(data.get("wz", 0) * 10)
 
-    left = clamp(throttle + turn)
-    right = clamp(throttle - turn)
+    # Mirror REMOTE_CONTROL_THROTTLE_SIGN / TURN_SIGN and wheel mixing in STM32.
+    left = clamp(-throttle - turn)
+    right = clamp(-throttle + turn)
     seq = data.get("seq", -1)
 
     print(

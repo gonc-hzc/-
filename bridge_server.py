@@ -14,7 +14,7 @@ except ImportError:
 
 WS_HOST = "127.0.0.1"
 WS_PORT = 8765
-STALE_TIMEOUT = 0.25
+STALE_TIMEOUT = 0.8
 STOP_REPEAT = 3
 
 
@@ -83,7 +83,7 @@ async def handle_websocket(websocket, args):
     try:
         while True:
             try:
-                message = await asyncio.wait_for(websocket.recv(), timeout=STALE_TIMEOUT)
+                message = await asyncio.wait_for(websocket.recv(), timeout=args.stale_timeout)
             except asyncio.TimeoutError:
                 await sink.send(protocol.build_stop_packet())
                 if not stale:
@@ -99,6 +99,9 @@ async def handle_websocket(websocket, args):
 
             try:
                 data = json.loads(message)
+                if isinstance(data, dict) and data.get("type") == "ble_control":
+                    continue
+
                 frame = protocol.build_from_message(data)
                 await sink.send(frame)
                 print("[FORWARD]", frame.strip())
@@ -125,6 +128,12 @@ def parse_args():
     parser.add_argument("--baud", type=int, default=115200, help="serial baudrate, default 115200")
     parser.add_argument("--host", default=WS_HOST, help="websocket bind host")
     parser.add_argument("--port", type=int, default=WS_PORT, help="websocket bind port")
+    parser.add_argument(
+        "--stale-timeout",
+        type=float,
+        default=STALE_TIMEOUT,
+        help="frontend silence timeout before holding stop",
+    )
     return parser.parse_args()
 
 
@@ -140,4 +149,7 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
