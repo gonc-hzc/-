@@ -17,7 +17,7 @@ DEFAULT_BLE_ADDRESS = "19:D6:51:C4:64:57"
 DEFAULT_UART_CHAR = "0000ffe1-0000-1000-8000-00805f9b34fb"
 WS_HOST = "127.0.0.1"
 WS_PORT = 8765
-STALE_TIMEOUT = 0.8
+STALE_TIMEOUT = 0.35
 STOP_REPEAT = 3
 DEFAULT_CHUNK_SIZE = 20
 CHUNK_DELAY = 0.005
@@ -450,6 +450,9 @@ async def main():
                 active_state["websocket"] = websocket
 
             if previous is not None and previous is not websocket:
+                if sink.is_connected:
+                    protocol = RemoteProtocol()
+                    await send_stop(sink, protocol, args.packet_format)
                 try:
                     await previous.close(code=4000, reason="replaced by a newer frontend")
                 except Exception:
